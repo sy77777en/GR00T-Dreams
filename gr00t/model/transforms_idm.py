@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 import torch
+import tree
 from pydantic import Field, PrivateAttr
 from transformers.data.data_collator import DataCollatorMixin
 
@@ -42,7 +43,11 @@ def collate(features) -> dict:
     keys = features[0].keys()
     for key in keys:
         values = [elem[key] for elem in features]
-        if key in ["images", "view_ids"]:
+        """
+            Siyuan Cen on 2026-03-12
+            Add camera poses (extrinsics) to the input data.
+        """
+        if key in ["images", "camera_poses"]:
             batch[key] = torch.from_numpy(np.concatenate(values))
         else:
             batch[key] = torch.from_numpy(np.stack(values))
@@ -88,6 +93,13 @@ class GR00TIDMTransform(InvertibleModalityTransform):
     max_sequence_length: int = Field(default=112)
     action_horizon: int = None
     embodiment_tag: EmbodimentTag | None = None
+    
+    """
+        Siyuan Cen on 2026-03-12
+        Add camera poses (extrinsics) and initial robot state (eef state) to the input data.
+    """
+    camera_pose_dim: int = Field(default=16)   # Flatten (4x4) camera pose matrix
+    eef_state_dim: int = Field(default=6)      # Position (3) + Rotation (3)
 
     def set_metadata(self, dataset_metadata: DatasetMetadata):
         """Set the metadata for the transform."""
@@ -130,13 +142,17 @@ class GR00TIDMTransform(InvertibleModalityTransform):
 
     def _prepare_video(self, data: dict):
         """Process, stack, and pad images from data['video']."""
-        view_ids = []
+        """
+            Siyuan Cen on 2026-03-12
+            Only consider one frame viewpoint for now. Shape should be [T, 1, H, W, C]
+        """
+        # view_ids = []
         images = rearrange(
             data["video"],
             "t v h w c -> (t v) h w c",
         )
-        for i in range(images.shape[0]):
-            view_ids.append(i)
+        # for i in range(images.shape[0]):
+        #     view_ids.append(i)
         # Pad to max_num_images_per_sequence
         n_images = min(self.max_num_images_per_sequence, images.shape[0])
         images = images[: self.max_num_images_per_sequence]
@@ -149,9 +165,40 @@ class GR00TIDMTransform(InvertibleModalityTransform):
             processed_images.append(
                 self.siglip_processor.image_processor(images=[img_data])["pixel_values"]
             )
-        images = np.concatenate(processed_images, axis=0)
-        return images, n_images, n_image_tokens, view_ids
+        images = np.concatenate(processed_images, axis=0)    # → (2, 3, 256, 256)
+        return images, n_images, n_image_tokens
 
+
+    def _prepare_camera_pose(self, data: dict, n_images: int):
+        """
+            Siyuan Cen on 2026-03-12
+            Process camera poses (extrinsics) from data['camera_pose'].
+            Shape should be (4, 4) Extrinsic matrix for two frames.
+        """
+        extrinsics = data["camera_extrinsics"]
+        camera_poses = extrinsics.reshape(1, -1)  # (1, 16)
+        
+        if "camera_intrinsics" in data:
+            intrinsics = data["camera_intrinsics"]  # (3, 3)
+            intrinsics_flat = intrinsics.reshape(1, -1)  # (1, 9)
+            camera_poses = np.concatenate([camera_poses, intrinsics_flat], axis=-1)  # (1, 25)
+        camera_poses = np.repeat(camera_poses, repeats=n_images, axis=0)  # (n_images, D)
+        return camera_poses
+    
+    
+    def _prepare_eef_state(self, data: dict):
+        """
+            Siyuan Cen on 2026-03-12
+            Process initial robot state (eef state) from data['state'].
+            Shape should be (6,) Position (3) + Rotation (3)
+        """
+        eef_state = data["state.eef_initial_state"] # (6,)
+        eef_init = eef_init.reshape(-1)
+        state_dim = eef_init.shape[-1]
+        eef_state = np.pad(eef_init, (0, self.max_state_dim - state_dim), "constant")   # (max_state_dim, )
+        return eef_state
+    
+        
     def _prepare_action(self, data: dict):
         """
         Pad to max_action_dim, return masks.
@@ -174,7 +221,7 @@ class GR00TIDMTransform(InvertibleModalityTransform):
 
         return actions, actions_mask, n_action_tokens
 
-    def _build_token_ids(self, n_images, n_action_tokens):
+    def _build_token_ids(self, n_images, n_action_tokens, has_state=False):
         """
         Build the 1D array of token_ids based on the number of each block.
         Return (token_ids, special_pad_token_idx).
@@ -185,6 +232,10 @@ class GR00TIDMTransform(InvertibleModalityTransform):
         # 1) Video placeholders
         for _ in range(n_images):
             vl_token_ids.extend([_IMG_TOKEN] * self.num_visual_tokens_per_frame)
+            
+        # State token
+        if has_state:
+            sa_token_ids.extend([_PROPRIO_TOKEN] * 1)
 
         # 5) Action tokens
         sa_token_ids.extend([_ACT_TOKEN] * n_action_tokens)
@@ -232,9 +283,21 @@ class GR00TIDMTransform(InvertibleModalityTransform):
         transformed_data = {}
 
         # 1) Prepare video
-        images, n_images, n_image_tokens, view_ids = self._prepare_video(data)
+        images, n_images, n_image_tokens = self._prepare_video(data)
         transformed_data["images"] = images
-        transformed_data["view_ids"] = view_ids
+        # transformed_data["view_ids"] = view_ids
+        
+        """
+            Siyuan Cen on 2026-03-12
+            Add camera poses (extrinsics) and initial robot state (eef state) to the input data.
+        """
+        # 2) Prepare camera pose
+        camera_poses = self._prepare_camera_pose(data, n_images)
+        transformed_data["camera_poses"] = camera_poses
+        
+        # 3) Prepare eef state
+        eef_state = self._prepare_eef_state(data)
+        transformed_data["eef_state"] = eef_state
 
 
         if self.training:

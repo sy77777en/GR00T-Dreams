@@ -535,9 +535,7 @@ class BimanualPandaHandDataConfig(BaseDataConfig):
 
 class SinglePandaGripperDataConfig(BaseDataConfig):
     video_keys = [
-        "video.left_view",
-        "video.right_view",
-        "video.wrist_view",
+        "video.ego_view",
     ]
     state_keys = [
         "state.end_effector_position_relative",
@@ -677,19 +675,20 @@ class Gr1ArmsWaistDataConfig(Gr1ArmsOnlyDataConfig):
 
 class FrankaDataConfig(BaseDataConfig):
     video_keys = [
-        "video.exterior_image_1_left_pad_res256_freq15",
-        "video.exterior_image_2_left_pad_res256_freq15",
-        "video.wrist_image_left_pad_res256_freq15",
+        "video.ego_view_image_left_pad_res256_freq15",
     ]
     state_keys = [
         "state.eef_position",
         "state.eef_rotation",
         "state.gripper_position",
+        "state.camera_poses",
+        "state.eef_initial_state"
     ]
     action_keys = [
-        "action.eef_position_delta",
-        "action.eef_rotation_delta",
-        "action.gripper_position",
+        # "action.eef_position_delta",
+        # "action.eef_rotation_delta",
+        # "action.gripper_position",
+        "action.eef_7d",
     ]
 
     language_keys = ["annotation.language.language_instruction"]

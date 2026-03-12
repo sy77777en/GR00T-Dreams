@@ -56,6 +56,14 @@ class SinusoidalPositionalEncoding(nn.Module):
 
 @dataclass
 class FlowMatchingActionHeadIDMConfig(PretrainedConfig):
+    """
+        Siyuan Cen on 2026-03-12
+        Add camera pose embedding.
+    """
+    camera_pose_dim: int = field(default=16, metadata={"help": "Flattened camera pose dim"})
+    eef_state_dim: int = field(default=16, metadata={"help": "eef initial state dim (padded)"})
+    add_eef_state_embed: bool = field(default=True, metadata={"help": "Whether to add eef initial state embedding"})
+    
     add_pos_embed: bool = field(
         default=False, metadata={"help": "Whether to add positional embedding"}
     )
@@ -201,6 +209,11 @@ class FlowMatchingActionHeadIDM(nn.Module):
         self.action_horizon = config.action_horizon
         self.num_inference_timesteps = config.num_inference_timesteps
         self.vl_self_attention_model = instantiate(config.vl_self_attention_cfg)
+        self.eef_state_projector = nn.Sequential(
+            nn.Linear(config.eef_state_dim, self.hidden_size),
+            nn.SiLU(),
+            nn.Linear(self.hidden_size, self.hidden_size),
+        )
         self.action_encoder = MultiEmbodimentActionEncoder(
             action_dim=config.action_dim,
             hidden_size=self.hidden_size,
@@ -220,9 +233,12 @@ class FlowMatchingActionHeadIDM(nn.Module):
         if config.add_pos_embed:
             self.position_embedding = nn.Embedding(config.max_seq_len, self.hidden_size)
             nn.init.normal_(self.position_embedding.weight, mean=0.0, std=0.02)
-        if config.add_view_embed:
-            self.view_embedding = nn.Embedding(config.max_num_views, self.hidden_size)
-            nn.init.normal_(self.view_embedding.weight, mean=0.0, std=0.02)
+        # if config.add_view_embed:
+        #     self.view_embedding = nn.Embedding(config.max_num_views, self.hidden_size)
+        #     nn.init.normal_(self.view_embedding.weight, mean=0.0, std=0.02)
+        if config.add_camera_pose_embed:
+            self.camera_pose_projector = nn.Linear(config.camera_pose_dim, self.hidden_size)
+            nn.init.normal_(self.camera_pose_projector.weight, mean=0.0, std=0.02)
 
         self.set_trainable_parameters(
             tune_multi_projector=config.tune_multi_projector,
@@ -319,15 +335,23 @@ class FlowMatchingActionHeadIDM(nn.Module):
     def prepare_input(self, batch: dict) -> BatchFeature:
         return BatchFeature(data=batch)
 
-    def encode_images(self, images, view_ids):
+    """
+        Siyuan Cen on 2026-03-12
+        Encode images and camera poses.
+    """
+    def encode_images(self, images, camera_poses):
         image_features = self.siglip_model.vision_model(images)["last_hidden_state"]
         image_features = self.vision_projector(image_features)
         if self.mm_projector is not None:
             image_features = self.mm_projector(image_features)
-        if self.config.add_view_embed:
-            view_embs = self.view_embedding(view_ids)
-            view_embs = view_embs.unsqueeze(1).expand(-1, image_features.shape[1], -1)
-            image_features = image_features + view_embs
+        if self.config.add_camera_pose_embed:
+            camera_pose_features = self.camera_pose_projector(camera_poses)
+            camera_pose_features = camera_pose_features.unsqueeze(1).expand(-1, image_features.shape[1], -1)
+            image_features = image_features + camera_pose_features
+        # if self.config.add_view_embed:
+        #     view_embs = self.view_embedding(view_ids)
+            # view_embs = view_embs.unsqueeze(1).expand(-1, image_features.shape[1], -1)
+            # image_features = image_features + view_embs
         return image_features
 
     def prepare_input_embs(self, vl_token_ids, sa_token_ids, vision, action):
@@ -375,7 +399,8 @@ class FlowMatchingActionHeadIDM(nn.Module):
         data = action_input
         embodiment_id = action_input.embodiment_id
         # 1) Encode images/state
-        visual_features = self.encode_images(data["images"], data["view_ids"])
+        # visual_features = self.encode_images(data["images"], data["view_ids"])
+        visual_features = self.encode_images(data["images"], data["camera_poses"])
 
         # 2) Prepare noisy trajectory
         actions = data["actions"]
@@ -391,6 +416,17 @@ class FlowMatchingActionHeadIDM(nn.Module):
 
         # 4) Get action encoder embeddings with correct time argument
         action_features = self.action_encoder(noisy_trajectory, t_discretized, embodiment_id)
+        
+        """
+            Siyuan Cen on 2026-03-12
+            Encode eef initial state.
+        """
+        eef_state = data["eef_state"]
+        if self.config.add_eef_state_embed:
+            eef_feat = self.eef_state_projector(eef_state)      # (B, hidden)
+            eef_feat = eef_feat.unsqueeze(1).expand(-1, action_features.shape[1], -1)
+            action_features = action_features + eef_feat
+        
         # 5) Prepare full input to DiT (or your model)
         vl_embs, sa_embs = self.prepare_input_embs(
             data["vl_token_ids"],
