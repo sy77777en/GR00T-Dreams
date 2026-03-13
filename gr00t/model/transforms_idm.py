@@ -208,16 +208,17 @@ class GR00TIDMTransform(InvertibleModalityTransform):
         n_action_tokens = actions.shape[0]  # T
         n_action_dims = actions.shape[1]
 
-        assert (
-            n_action_dims <= self.max_action_dim
-        ), f"Action dim {n_action_dims} exceeds max allowed {self.max_action_dim}."
+        # assert (
+        #     n_action_dims <= self.max_action_dim
+        # ), f"Action dim {n_action_dims} exceeds max allowed {self.max_action_dim}."
 
-        # Pad the channel dimension
-        actions = np.pad(actions, ((0, 0), (0, self.max_action_dim - n_action_dims)), "constant")
+        # # Pad the channel dimension
+        # actions = np.pad(actions, ((0, 0), (0, self.max_action_dim - n_action_dims)), "constant")
 
-        # Create mask: [T, max_action_dim]
-        actions_mask = np.zeros((n_action_tokens, self.max_action_dim), dtype=bool)
-        actions_mask[:, :n_action_dims] = True
+        # # Create mask: [T, max_action_dim]
+        # actions_mask = np.zeros((n_action_tokens, self.max_action_dim), dtype=bool)
+        # actions_mask[:, :n_action_dims] = True
+        actions_mask = np.ones_like(actions, dtype=bool)
 
         return actions, actions_mask, n_action_tokens
 

@@ -17,6 +17,10 @@ config:
     config:
       _target_: gr00t.model.action_head.flow_matching_action_head_idm.FlowMatchingActionHeadIDMConfig
       _recursive_: false
+      add_camera_pose_embed: true
+      camera_pose_dim: 16
+      add_eef_state_embed: true
+      eef_state_dim: 6
       add_seperator_token: true
       add_pos_embed: true
       model_dtype: float32
@@ -25,7 +29,7 @@ config:
       max_action_dim: 32
       hidden_size: 1024
       tune_vision_tower: true
-      add_view_embed: true
+      add_view_embed: false
       max_num_views: 6
       siglip_model_cfg:
         _target_: gr00t.model.action_head.siglip.SiglipModel.from_pretrained

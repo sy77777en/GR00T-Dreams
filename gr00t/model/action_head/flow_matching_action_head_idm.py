@@ -63,6 +63,7 @@ class FlowMatchingActionHeadIDMConfig(PretrainedConfig):
     camera_pose_dim: int = field(default=16, metadata={"help": "Flattened camera pose dim"})
     eef_state_dim: int = field(default=16, metadata={"help": "eef initial state dim (padded)"})
     add_eef_state_embed: bool = field(default=True, metadata={"help": "Whether to add eef initial state embedding"})
+    add_camera_pose_embed: bool = field(default=True, metadata={"help": "Whether to add camera pose embedding"})
     
     add_pos_embed: bool = field(
         default=False, metadata={"help": "Whether to add positional embedding"}
@@ -283,8 +284,8 @@ class FlowMatchingActionHeadIDM(nn.Module):
             self.action_decoder.requires_grad_(False)
             if self.config.add_pos_embed:
                 self.position_embedding.requires_grad_(False)
-            if self.config.add_view_embed:
-                self.view_embedding.requires_grad_(False)
+            # if self.config.add_view_embed:
+            #     self.view_embedding.requires_grad_(False)
         if not tune_diffusion_model:
             self.model.requires_grad_(False)
         if not tune_vision_tower:
@@ -316,8 +317,8 @@ class FlowMatchingActionHeadIDM(nn.Module):
                 self.action_decoder.eval()
                 if self.config.add_pos_embed:
                     self.position_embedding.eval()
-                if self.config.add_view_embed:
-                    self.view_embedding.eval()
+                # if self.config.add_view_embed:
+                #     self.view_embedding.eval()
             if not self.tune_diffusion_model:
                 self.model.eval()
             if not self.tune_vision_tower:
@@ -478,7 +479,7 @@ class FlowMatchingActionHeadIDM(nn.Module):
         dt = 1.0 / num_steps
 
         # 2) Encode static context (images, text, state) once if it does not depend on actions
-        visual_features = self.encode_images(data["images"], data["view_ids"])
+        visual_features = self.encode_images(data["images"], data["camera_poses"])
 
         # 3) Start denoising the actions
         for i in range(num_steps):
@@ -493,6 +494,10 @@ class FlowMatchingActionHeadIDM(nn.Module):
                 (torch.ones(actions.shape[0]) * t_discretized).cuda().to(device),
                 embodiment_id,
             )
+            if self.config.add_eef_state_embed:
+                eef_feat = self.eef_state_projector(data["eef_state"])
+                eef_feat = eef_feat.unsqueeze(1).expand(-1, action_features.shape[1], -1)
+                action_features = action_features + eef_feat
             vl_embs, sa_embs = self.prepare_input_embs(
                 data["vl_token_ids"],
                 data["sa_token_ids"],
